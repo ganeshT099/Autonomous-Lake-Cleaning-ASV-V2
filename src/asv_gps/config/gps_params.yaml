@@ -1,0 +1,6 @@
+asv_gps_node:
+  ros__parameters:
+    port: "/dev/ttyACM0"
+    baud_rate: 38400
+    frame_id: "gps_link"
+    publish_hz: 10.0
