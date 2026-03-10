@@ -1,0 +1,17 @@
+asv_joystick_node:
+  ros__parameters:
+    max_linear:       0.8
+    max_angular:      1.0
+    boost_multiplier: 1.5
+    deadzone:         0.05
+    cmd_timeout:      0.5
+    publish_hz:       20.0
+    # Xbox/PS5 axis mapping
+    axis_linear:  1
+    axis_angular: 3
+    # Button mapping
+    btn_deadman: 5    # RB — hold to move
+    btn_boost:   4    # LB — speed boost
+    btn_estop:   1    # B  — emergency stop
+    btn_auto:    7    # Start — auto mode
+    btn_manual:  6    # Back  — manual mode
