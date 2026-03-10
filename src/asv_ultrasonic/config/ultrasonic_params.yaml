@@ -1,0 +1,13 @@
+asv_ultrasonic_node:
+  ros__parameters:
+    # GPIO BCM pin numbers (Jetson)
+    front_trig: 23
+    front_echo: 24
+    right_trig: 25
+    right_echo: 26
+    left_trig:  27
+    left_echo:  22
+    publish_hz: 10.0
+    # Safety thresholds in metres
+    danger_threshold:  0.5    # STOP — obstacle closer than 0.5m
+    warning_threshold: 1.0    # SLOW DOWN — obstacle closer than 1.0m
