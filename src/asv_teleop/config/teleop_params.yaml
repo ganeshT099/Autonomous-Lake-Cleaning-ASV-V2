@@ -1,0 +1,5 @@
+asv_teleop_node:
+  ros__parameters:
+    max_linear:  0.5      # m/s — increase when on water
+    max_angular: 1.0      # rad/s
+    publish_hz:  10.0
