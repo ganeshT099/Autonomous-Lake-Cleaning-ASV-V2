@@ -1,0 +1,8 @@
+asv_thruster_node:
+  ros__parameters:
+    port: "/dev/ttyUSB0"
+    baud_rate: 115200
+    max_linear:  1.0
+    max_angular: 1.0
+    safety_stop: true
+    cmd_timeout: 1.0
