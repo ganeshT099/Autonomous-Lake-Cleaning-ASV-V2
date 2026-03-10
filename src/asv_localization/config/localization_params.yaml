@@ -1,0 +1,5 @@
+asv_localization_node:
+  ros__parameters:
+    publish_hz: 20.0
+    frame_id: "map"
+    child_frame: "base_link"
