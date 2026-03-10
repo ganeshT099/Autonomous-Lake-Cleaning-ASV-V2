@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
 ASV Master Bringup Launch File
-Launches all nodes with one command:
+Usage:
   ros2 launch asv_bringup asv_bringup.launch.py
-
-Optional args:
-  teleop:=true/false  (default: true)
-  camera:=true/false  (default: true)
+  ros2 launch asv_bringup asv_bringup.launch.py joystick:=true teleop:=false
+  ros2 launch asv_bringup asv_bringup.launch.py camera:=false
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
+from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -22,7 +20,7 @@ def cfg(pkg, filename):
 
 def generate_launch_description():
 
-    # Launch arguments
+    # ── Launch Arguments ──────────────────────────────────────────
     teleop_arg = DeclareLaunchArgument(
         'teleop', default_value='true',
         description='Launch keyboard teleop node')
@@ -31,11 +29,16 @@ def generate_launch_description():
         'camera', default_value='true',
         description='Launch camera node')
 
+    joystick_arg = DeclareLaunchArgument(
+        'joystick', default_value='false',
+        description='Launch joystick node')
+
     return LaunchDescription([
         teleop_arg,
         camera_arg,
+        joystick_arg,
 
-        # ── GPS ──────────────────────────────────────────────
+        # ── GPS ──────────────────────────────────────────────────
         Node(
             package='asv_gps',
             executable='asv_gps_node',
@@ -44,7 +47,7 @@ def generate_launch_description():
             parameters=[cfg('asv_gps', 'gps_params.yaml')],
         ),
 
-        # ── IMU ──────────────────────────────────────────────
+        # ── IMU ──────────────────────────────────────────────────
         Node(
             package='asv_imu',
             executable='asv_imu_node',
@@ -53,7 +56,7 @@ def generate_launch_description():
             parameters=[cfg('asv_imu', 'imu_params.yaml')],
         ),
 
-        # ── Radar ─────────────────────────────────────────────
+        # ── Radar ─────────────────────────────────────────────────
         Node(
             package='asv_radar',
             executable='asv_radar_node',
@@ -62,7 +65,7 @@ def generate_launch_description():
             parameters=[cfg('asv_radar', 'radar_params.yaml')],
         ),
 
-        # ── Ultrasonic ESP32 Bridge ───────────────────────────
+        # ── Ultrasonic ESP32 Bridge ───────────────────────────────
         Node(
             package='asv_ultrasonic',
             executable='asv_ultrasonic_node',
@@ -71,7 +74,7 @@ def generate_launch_description():
             parameters=[cfg('asv_ultrasonic', 'ultrasonic_params.yaml')],
         ),
 
-        # ── Camera (optional) ─────────────────────────────────
+        # ── Camera (optional) ─────────────────────────────────────
         Node(
             package='asv_camera',
             executable='asv_camera_node',
@@ -81,7 +84,7 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration('camera')),
         ),
 
-        # ── Thruster Control ──────────────────────────────────
+        # ── Thruster Control ──────────────────────────────────────
         Node(
             package='asv_thruster',
             executable='asv_thruster_node',
@@ -90,7 +93,35 @@ def generate_launch_description():
             parameters=[cfg('asv_thruster', 'thruster_params.yaml')],
         ),
 
-        # ── Keyboard Teleop (optional) ────────────────────────
+        # ── Localization ──────────────────────────────────────────
+        Node(
+            package='asv_localization',
+            executable='asv_localization_node',
+            name='asv_localization_node',
+            output='screen',
+            parameters=[cfg('asv_localization', 'localization_params.yaml')],
+        ),
+
+        # ── Joy driver (optional) ─────────────────────────────────
+        Node(
+            package='joy',
+            executable='joy_node',
+            name='joy_node',
+            output='screen',
+            condition=IfCondition(LaunchConfiguration('joystick')),
+        ),
+
+        # ── Joystick Teleop (optional) ────────────────────────────
+        Node(
+            package='asv_joystick',
+            executable='asv_joystick_node',
+            name='asv_joystick_node',
+            output='screen',
+            parameters=[cfg('asv_joystick', 'joystick_params.yaml')],
+            condition=IfCondition(LaunchConfiguration('joystick')),
+        ),
+
+        # ── Keyboard Teleop (optional) ────────────────────────────
         Node(
             package='asv_teleop',
             executable='asv_teleop_node',
