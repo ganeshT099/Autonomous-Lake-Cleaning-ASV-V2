@@ -1,0 +1,8 @@
+asv_camera_node:
+  ros__parameters:
+    device_id: 2
+    width: 1280
+    height: 720
+    fps: 30
+    frame_id: "camera_link"
+    publish_hz: 30.0
