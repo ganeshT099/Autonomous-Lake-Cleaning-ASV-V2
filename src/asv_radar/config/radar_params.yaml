@@ -1,0 +1,8 @@
+asv_radar_node:
+  ros__parameters:
+    port: "/dev/ttyUSB0"
+    baud_rate: 115200
+    frame_id: "radar_link"
+    publish_hz: 10.0
+    max_range: 9.0
+    min_range: 0.15
