@@ -1,0 +1,5 @@
+asv_imu_node:
+  ros__parameters:
+    frame_id: "imu_link"
+    publish_hz: 50.0
+    i2c_address: 0x4A
