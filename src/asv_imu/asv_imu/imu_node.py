@@ -1,134 +1,132 @@
 #!/usr/bin/env python3
+
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from sensor_msgs.msg import Imu, MagneticField
-from std_msgs.msg import String
+import smbus
+import time
+import struct
 import math
-import threading
 
-try:
-    import board
-    import busio
-    from adafruit_bno08x import (
-        BNO_REPORT_ROTATION_VECTOR,
-        BNO_REPORT_GYROSCOPE,
-        BNO_REPORT_ACCELEROMETER,
-        BNO_REPORT_MAGNETOMETER,
-    )
-    from adafruit_bno08x.i2c import BNO08X_I2C
-    BNO_AVAILABLE = True
-except ImportError:
-    BNO_AVAILABLE = False
+I2C_BUS = 7
+BNO_ADDR = 0x4B
+
+class BNO085:
+    def __init__(self):
+        self.bus = smbus.SMBus(I2C_BUS)
+        self.seq = [0]*6
+
+        self.reset()
+        time.sleep(1)
+
+        self.enable_rotation_vector()
+        time.sleep(0.5)
+
+    def reset(self):
+        try:
+            self.bus.write_i2c_block_data(BNO_ADDR, 0, [0x05, 0, 0, 0, 0])
+        except:
+            pass
+
+    def send_packet(self, channel, data):
+        length = len(data) + 4
+        packet = [
+            length & 0xFF,
+            (length >> 8) & 0xFF,
+            channel,
+            self.seq[channel]
+        ] + data
+
+        self.seq[channel] = (self.seq[channel] + 1) & 0xFF
+        self.bus.write_i2c_block_data(BNO_ADDR, 0, packet)
+
+    def enable_rotation_vector(self):
+        interval = 10000  # 100Hz
+
+        data = [
+            0xFD,
+            0x05,
+            0,0,
+            0,0,
+            interval & 0xFF,
+            (interval >> 8) & 0xFF,
+            (interval >> 16) & 0xFF,
+            (interval >> 24) & 0xFF,
+            0,0,0,0,
+            0,0,0,0
+        ]
+
+        self.send_packet(2, data)
+
+    def read_quaternion(self):
+        try:
+            header = self.bus.read_i2c_block_data(BNO_ADDR, 0, 4)
+            length = (header[1] << 8 | header[0]) & 0x7FFF
+
+            if length <= 4 or length > 50:
+                return None
+
+            data = self.bus.read_i2c_block_data(BNO_ADDR, 0, length)
+
+            report_id = data[4]
+
+            if report_id == 0x05:
+                i = struct.unpack_from('<h', bytes(data), 6)[0] / 16384.0
+                j = struct.unpack_from('<h', bytes(data), 8)[0] / 16384.0
+                k = struct.unpack_from('<h', bytes(data),10)[0] / 16384.0
+                r = struct.unpack_from('<h', bytes(data),12)[0] / 16384.0
+
+                return (i, j, k, r)
+
+        except Exception:
+            return None
+
+        return None
+
 
 class IMUNode(Node):
     def __init__(self):
         super().__init__('asv_imu_node')
 
-        self.declare_parameter('frame_id',   'imu_link')
-        self.declare_parameter('publish_hz',  50.0)
-        self.declare_parameter('i2c_address', 0x4A)
-
-        self.frame_id = self.get_parameter('frame_id').value
-        self.pub_hz   = self.get_parameter('publish_hz').value
-
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            depth=10)
-
-        self.imu_pub    = self.create_publisher(Imu,          '/asv/imu/data',   sensor_qos)
-        self.mag_pub    = self.create_publisher(MagneticField, '/asv/imu/mag',    sensor_qos)
-        self.status_pub = self.create_publisher(String,        '/asv/imu/status', 10)
-
-        if not BNO_AVAILABLE:
-            self.get_logger().warn('Adafruit BNO08x library not found — hardware not connected')
+        try:
+            self.bno = BNO085()
+            self.get_logger().info("IMU connected on I2C ✅")
+        except Exception as e:
+            self.get_logger().error(f"IMU init failed: {e}")
             self.bno = None
-        else:
-            try:
-                i2c = busio.I2C(board.SCL, board.SDA, frequency=400_000)
-                self.bno = BNO08X_I2C(i2c)
-                self.bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
-                self.bno.enable_feature(BNO_REPORT_GYROSCOPE)
-                self.bno.enable_feature(BNO_REPORT_ACCELEROMETER)
-                self.bno.enable_feature(BNO_REPORT_MAGNETOMETER)
-                self.get_logger().info('BNO085 initialised on I2C')
-            except Exception as e:
-                self.get_logger().error(f'BNO085 init failed: {e}')
-                self.bno = None
 
-        self.timer = self.create_timer(1.0 / self.pub_hz, self._publish)
-        self.get_logger().info('IMU node started')
+        self.timer = self.create_timer(0.1, self.loop)
 
-    def _publish(self):
-        now = self.get_clock().now().to_msg()
+    def loop(self):
+        if self.bno is None:
+            return
 
-        imu_msg = Imu()
-        imu_msg.header.stamp    = now
-        imu_msg.header.frame_id = self.frame_id
+        for _ in range(5):  # retry multiple times
+            quat = self.bno.read_quaternion()
 
-        mag_msg = MagneticField()
-        mag_msg.header.stamp    = now
-        mag_msg.header.frame_id = self.frame_id
-
-        if self.bno is not None:
-            try:
-                qi, qj, qk, qr = self.bno.quaternion
-                imu_msg.orientation.x = qi
-                imu_msg.orientation.y = qj
-                imu_msg.orientation.z = qk
-                imu_msg.orientation.w = qr
-                imu_msg.orientation_covariance = [0.0025,0,0, 0,0.0025,0, 0,0,0.0025]
-
-                gx, gy, gz = self.bno.gyro
-                imu_msg.angular_velocity.x = gx
-                imu_msg.angular_velocity.y = gy
-                imu_msg.angular_velocity.z = gz
-                imu_msg.angular_velocity_covariance = [0.0001,0,0, 0,0.0001,0, 0,0,0.0001]
-
-                ax, ay, az = self.bno.acceleration
-                imu_msg.linear_acceleration.x = ax
-                imu_msg.linear_acceleration.y = ay
-                imu_msg.linear_acceleration.z = az
-                imu_msg.linear_acceleration_covariance = [0.01,0,0, 0,0.01,0, 0,0,0.01]
-
-                mx, my, mz = self.bno.magnetic
-                mag_msg.magnetic_field.x = mx * 1e-6
-                mag_msg.magnetic_field.y = my * 1e-6
-                mag_msg.magnetic_field.z = mz * 1e-6
-                mag_msg.magnetic_field_covariance = [1e-6,0,0, 0,1e-6,0, 0,0,1e-6]
+            if quat:
+                qi, qj, qk, qr = quat
 
                 yaw = math.atan2(
-                    2.0 * (qr * qk + qi * qj),
-                    1.0 - 2.0 * (qj * qj + qk * qk))
+                    2.0 * (qr*qk + qi*qj),
+                    1.0 - 2.0 * (qj*qj + qk*qk)
+                )
+
                 heading = math.degrees(yaw) % 360.0
 
-                s = String()
-                s.data = (f'[IMU] heading={heading:.1f}° | '
-                          f'gyro=({gx:.3f},{gy:.3f},{gz:.3f}) | '
-                          f'accel=({ax:.2f},{ay:.2f},{az:.2f})')
-                self.status_pub.publish(s)
+                self.get_logger().info(f"[IMU] Heading: {heading:.2f}")
+                return
 
-            except Exception as e:
-                self.get_logger().warn(f'IMU read error: {e}')
-        else:
-            s = String()
-            s.data = '[IMU] Waiting for hardware — connect BNO085 via I2C'
-            self.status_pub.publish(s)
+        # If no data
+        self.get_logger().info("[IMU] No data yet...")
 
-        self.imu_pub.publish(imu_msg)
-        self.mag_pub.publish(mag_msg)
 
-def main(args=None):
-    rclpy.init(args=args)
+def main():
+    rclpy.init()
     node = IMUNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
