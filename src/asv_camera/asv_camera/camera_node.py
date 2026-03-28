@@ -12,7 +12,7 @@ class CameraNode(Node):
 
         self.bridge = CvBridge()
 
-        self.cap = cv2.VideoCapture(2)
+        self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
 
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
