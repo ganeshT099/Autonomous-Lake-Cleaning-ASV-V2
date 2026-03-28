@@ -1,7 +1,33 @@
+# ROS2 build artifacts
 build/
 install/
 log/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Packaging
 *.egg-info/
+dist/
+build/
+
+# VS Code
 .vscode/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# ROS bag files
+*.db3
+*.sqlite3
+
+# Temporary files
+*.log
+*.tmp
+
+# Environment
+.env
