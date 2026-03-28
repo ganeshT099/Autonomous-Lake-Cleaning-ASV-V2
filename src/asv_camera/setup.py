@@ -20,7 +20,7 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
-            'asv_camera_node = asv_camera.camera_node:main',
+            'camera_node = asv_camera.camera_node:main',
         ],
     },
 )
