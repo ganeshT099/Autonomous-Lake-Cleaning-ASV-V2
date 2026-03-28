@@ -1,234 +1,284 @@
 #!/usr/bin/env python3
 """
-ASV Joystick Teleop Node
-Subscribes: /joy (sensor_msgs/Joy)
-Publishes:  /cmd_vel (geometry_msgs/Twist)
-            /asv/joystick/status (std_msgs/String)
+ASV Joystick Node - FINAL PAKKA VERSION
+=========================================
+Direct evdev - no joy node needed!
+Auto device detection!
 
-Controller Mapping (Xbox/PS5 compatible):
-  Left  Stick  UP/DOWN  = Forward / Backward
-  Right Stick  LEFT/RIGHT = Turn Left / Right
-  RB Button    = Dead man switch (must hold to move)
-  LB Button    = Speed boost (hold for full speed)
-  B  Button    = Emergency Stop
-  Start Button = Enable autonomous mode
-  Back Button  = Disable autonomous mode (manual)
+Hardware: Cosmic Byte Stellaris (shows as Xbox360)
 
-Axis mapping (Xbox):
-  axes[1] = Left stick Y  (forward/back)
-  axes[3] = Right stick X (turn)
-  axes[5] = RT (right trigger)
-  axes[2] = LT (left trigger)
+Confirmed Mapping:
+  Left stick Y  = axis 1  (forward/back)
+  Right stick X = axis 3  (turn)
+  RB            = 311     (deadman)
+  LB            = 310     (boost)
+  B             = 305     (estop)
+  HOME          = 316     (clear estop)
 
-Button mapping (Xbox):
-  buttons[0] = A
-  buttons[1] = B  → Emergency stop
-  buttons[2] = X
-  buttons[3] = Y
-  buttons[4] = LB → Speed boost
-  buttons[5] = RB → Dead man switch
-  buttons[7] = Start → Auto mode
-  buttons[6] = Back  → Manual mode
+Publishes:
+  /cmd_vel             → Twist
+  /asv/mode            → String
+  /asv/joystick/status → String
 """
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
+import evdev
+from evdev import ecodes
+import threading
 import time
+import signal
+import sys
+
+# ── Cosmic Byte evdev button codes ───────────────────────────
+BTN_A     = 304
+BTN_B     = 305   # Emergency stop
+BTN_X     = 307
+BTN_Y     = 308
+BTN_LB    = 310   # Speed boost
+BTN_RB    = 311   # Deadman
+BTN_BACK  = 314   # Manual mode
+BTN_HOME  = 316   # Clear estop
+
+# ── Axis codes ────────────────────────────────────────────────
+ABS_LEFT_X  = 0
+ABS_LEFT_Y  = 1   # Forward/back
+ABS_LT      = 2
+ABS_RIGHT_X = 3   # Turn
+ABS_RIGHT_Y = 4
+ABS_RT      = 5
+
+# ── Speed config ──────────────────────────────────────────────
+MAX_LINEAR  = 1.0
+MAX_ANGULAR = 1.0
+BOOST_MULT  = 1.2   # Safe boost
+DEADZONE    = 0.15  # Larger for water stability
+SMOOTH      = 0.3   # Smoothing factor (0.3 = responsive)
+
+
+def find_controller():
+    """Auto detect controller device"""
+    for path in evdev.list_devices():
+        try:
+            d = evdev.InputDevice(path)
+            if any(name in d.name for name in
+                   ['Xbox', 'X-Box', 'Cosmic', 'gamepad', 'Gamepad']):
+                print(f'Controller found: {d.name} at {path}')
+                return d
+        except Exception:
+            continue
+    return None
 
 
 class JoystickNode(Node):
     def __init__(self):
         super().__init__('asv_joystick_node')
 
-        # ── Parameters ───────────────────────────────────────────
-        self.declare_parameter('max_linear',         0.8)
-        self.declare_parameter('max_angular',        1.0)
-        self.declare_parameter('boost_multiplier',   1.5)
-        self.declare_parameter('deadzone',           0.05)
-        self.declare_parameter('cmd_timeout',        0.5)
-        self.declare_parameter('publish_hz',         20.0)
+        # ── State ─────────────────────────────────────────────
+        self.linear      = 0.0
+        self.angular     = 0.0
+        self.raw_linear  = 0.0
+        self.raw_angular = 0.0
+        self.deadman     = False
+        self.boost       = False
+        self.estop       = False
+        self.mode        = 'MANUAL'
+        self.last_joy    = time.time()
+        self.axis_max    = {}
+        self.lock        = threading.Lock()
 
-        # Xbox/PS5 axis mapping
-        self.declare_parameter('axis_linear',        1)   # left stick Y
-        self.declare_parameter('axis_angular',       3)   # right stick X
-        self.declare_parameter('btn_deadman',        5)   # RB
-        self.declare_parameter('btn_boost',          4)   # LB
-        self.declare_parameter('btn_estop',          1)   # B
-        self.declare_parameter('btn_auto',           7)   # Start
-        self.declare_parameter('btn_manual',         6)   # Back
+        # ── Find controller ───────────────────────────────────
+        self.controller = find_controller()
+        if self.controller is None:
+            self.get_logger().error('Controller not found!')
+        else:
+            self.get_logger().info(
+                f'Controller: {self.controller.name} ✅')
+            caps = self.controller.capabilities()
+            for code, absinfo in caps.get(ecodes.EV_ABS, []):
+                self.axis_max[code] = (absinfo.min, absinfo.max)
 
-        self.max_linear       = self.get_parameter('max_linear').value
-        self.max_angular      = self.get_parameter('max_angular').value
-        self.boost_mult       = self.get_parameter('boost_multiplier').value
-        self.deadzone         = self.get_parameter('deadzone').value
-        self.cmd_timeout      = self.get_parameter('cmd_timeout').value
-        self.pub_hz           = self.get_parameter('publish_hz').value
-        self.axis_linear      = self.get_parameter('axis_linear').value
-        self.axis_angular     = self.get_parameter('axis_angular').value
-        self.btn_deadman      = self.get_parameter('btn_deadman').value
-        self.btn_boost        = self.get_parameter('btn_boost').value
-        self.btn_estop        = self.get_parameter('btn_estop').value
-        self.btn_auto         = self.get_parameter('btn_auto').value
-        self.btn_manual       = self.get_parameter('btn_manual').value
+        # ── Publishers ────────────────────────────────────────
+        self.cmd_pub    = self.create_publisher(
+            Twist,  '/cmd_vel',             10)
+        self.mode_pub   = self.create_publisher(
+            String, '/asv/mode',            10)
+        self.status_pub = self.create_publisher(
+            String, '/asv/joystick/status', 10)
 
-        # ── QoS ──────────────────────────────────────────────────
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            depth=10)
+        # ── Controller read thread ────────────────────────────
+        t = threading.Thread(target=self._read_loop)
+        t.daemon = True
+        t.start()
 
-        # ── Subscribers ──────────────────────────────────────────
-        self.joy_sub = self.create_subscription(
-            Joy, '/joy', self._joy_cb, sensor_qos)
+        # ── Timers ────────────────────────────────────────────
+        self.create_timer(0.05, self._publish)   # 20Hz
+        self.create_timer(0.1,  self._watchdog)  # 10Hz
 
-        # ── Publishers ────────────────────────────────────────────
-        self.cmd_pub    = self.create_publisher(Twist,  '/cmd_vel',              10)
-        self.mode_pub   = self.create_publisher(String, '/asv/mode',             10)
-        self.status_pub = self.create_publisher(String, '/asv/joystick/status',  10)
-
-        # ── State ─────────────────────────────────────────────────
-        self.linear        = 0.0
-        self.angular       = 0.0
-        self.estop         = False
-        self.mode          = 'MANUAL'   # MANUAL or AUTO
-        self.last_joy_time = time.time()
-
-        # ── Timers ────────────────────────────────────────────────
-        self.pub_timer      = self.create_timer(1.0 / self.pub_hz, self._publish)
-        self.watchdog_timer = self.create_timer(0.1, self._watchdog)
-
-        self.get_logger().info('Joystick node started — hold RB to move!')
-        self._print_controls()
-
-    def _print_controls(self):
-        self.get_logger().info('═══════════════════════════════════')
+        self.get_logger().info('════════════════════════════')
         self.get_logger().info('  ASV JOYSTICK CONTROL')
-        self.get_logger().info('  Left Stick  = Forward/Backward')
-        self.get_logger().info('  Right Stick = Turn Left/Right')
-        self.get_logger().info('  RB = Dead man switch (hold!)')
-        self.get_logger().info('  LB = Speed boost')
-        self.get_logger().info('  B  = Emergency Stop')
-        self.get_logger().info('  Start = Auto mode')
-        self.get_logger().info('  Back  = Manual mode')
-        self.get_logger().info('═══════════════════════════════════')
+        self.get_logger().info('  Left stick = Forward/Back')
+        self.get_logger().info('  Right stick = Turn')
+        self.get_logger().info('  RB  = Deadman hold!')
+        self.get_logger().info('  LB  = Boost')
+        self.get_logger().info('  B   = Emergency stop')
+        self.get_logger().info('  HOME= Clear estop')
+        self.get_logger().info('════════════════════════════')
 
-    def _apply_deadzone(self, value):
-        if abs(value) < self.deadzone:
+    def _normalize(self, code, value):
+        if code in self.axis_max:
+            mn, mx = self.axis_max[code]
+            if mx != mn:
+                return (2.0 * (value - mn) / (mx - mn)) - 1.0
+        return value / 32767.0
+
+    def _deadzone(self, value):
+        if abs(value) < DEADZONE:
             return 0.0
         return value
 
-    def _joy_cb(self, msg):
-        self.last_joy_time = time.time()
-
-        axes    = msg.axes
-        buttons = msg.buttons
-
-        # ── Emergency Stop ────────────────────────────────────────
-        if len(buttons) > self.btn_estop and buttons[self.btn_estop]:
-            self.estop = True
-            self.linear  = 0.0
-            self.angular = 0.0
-            self.get_logger().warn('🛑 EMERGENCY STOP!')
+    def _read_loop(self):
+        if self.controller is None:
             return
+        self.get_logger().info('Controller reading started!')
+        for event in self.controller.read_loop():
+            self.last_joy = time.time()
+            with self.lock:
+                # ── Axis ──────────────────────────────────────
+                if event.type == ecodes.EV_ABS:
+                    val = self._normalize(event.code, event.value)
+                    val = self._deadzone(val)
+                    if event.code == ABS_LEFT_Y:
+                        self.raw_linear = -val
+                    elif event.code == ABS_RIGHT_X:
+                        self.raw_angular = -val
 
-        # ── Mode switching ────────────────────────────────────────
-        if len(buttons) > self.btn_auto and buttons[self.btn_auto]:
-            if self.mode != 'AUTO':
-                self.mode = 'AUTO'
-                self.get_logger().info('→ AUTO mode enabled')
-                m = String()
-                m.data = 'AUTO'
-                self.mode_pub.publish(m)
+                # ── Buttons ───────────────────────────────────
+                elif event.type == ecodes.EV_KEY:
+                    # RB deadman
+                    if event.code == BTN_RB:
+                        self.deadman = bool(event.value)
+                        if not self.deadman:
+                            self.raw_linear  = 0.0
+                            self.raw_angular = 0.0
+                            self.linear      = 0.0
+                            self.angular     = 0.0
+                        self.get_logger().info(
+                            f'Deadman: {self.deadman}')
 
-        if len(buttons) > self.btn_manual and buttons[self.btn_manual]:
-            if self.mode != 'MANUAL':
-                self.mode   = 'MANUAL'
-                self.estop  = False
-                self.get_logger().info('→ MANUAL mode enabled')
-                m = String()
-                m.data = 'MANUAL'
-                self.mode_pub.publish(m)
+                    # LB boost
+                    elif event.code == BTN_LB:
+                        self.boost = bool(event.value)
 
-        # ── Only move in MANUAL mode ──────────────────────────────
-        if self.mode != 'MANUAL':
-            return
+                    # B estop
+                    elif event.code == BTN_B and event.value == 1:
+                        self.estop       = True
+                        self.raw_linear  = 0.0
+                        self.raw_angular = 0.0
+                        self.linear      = 0.0
+                        self.angular     = 0.0
+                        self.get_logger().warn('🛑 EMERGENCY STOP!')
 
-        # ── Dead man switch — must hold RB ────────────────────────
-        deadman_held = (len(buttons) > self.btn_deadman and
-                        buttons[self.btn_deadman] == 1)
-        if not deadman_held:
-            self.linear  = 0.0
-            self.angular = 0.0
-            return
+                    # HOME clear estop
+                    elif event.code == BTN_HOME and event.value == 1:
+                        self.estop = False
+                        self.get_logger().info('✅ Estop cleared!')
 
-        # ── Clear estop if deadman pressed ───────────────────────
-        self.estop = False
-
-        # ── Speed boost ───────────────────────────────────────────
-        boost = (len(buttons) > self.btn_boost and
-                 buttons[self.btn_boost] == 1)
-        speed_mult = self.boost_mult if boost else 1.0
-
-        # ── Read axes ─────────────────────────────────────────────
-        lin = 0.0
-        ang = 0.0
-
-        if len(axes) > self.axis_linear:
-            lin = self._apply_deadzone(axes[self.axis_linear])
-        if len(axes) > self.axis_angular:
-            ang = self._apply_deadzone(axes[self.axis_angular])
-
-        # Scale to max speeds
-        self.linear  = lin * self.max_linear  * speed_mult
-        self.angular = ang * self.max_angular * speed_mult
-
-        # Clamp
-        self.linear  = max(-self.max_linear  * self.boost_mult,
-                       min( self.max_linear  * self.boost_mult, self.linear))
-        self.angular = max(-self.max_angular * self.boost_mult,
-                       min( self.max_angular * self.boost_mult, self.angular))
+                    # BACK manual mode
+                    elif event.code == BTN_BACK and event.value == 1:
+                        self.mode  = 'MANUAL'
+                        self.estop = False
+                        self.get_logger().info('→ MANUAL mode')
+                        m = String()
+                        m.data = 'MANUAL'
+                        self.mode_pub.publish(m)
 
     def _watchdog(self):
-        """Stop if no joy message received"""
-        if time.time() - self.last_joy_time > self.cmd_timeout:
+        """Stop everything if no input for 1 second"""
+        if time.time() - self.last_joy > 1.0:
+            with self.lock:
+                self.deadman     = False
+                self.raw_linear  = 0.0
+                self.raw_angular = 0.0
+                self.linear      = 0.0
+                self.angular     = 0.0
+
+    def _publish(self):
+        with self.lock:
+            estop      = self.estop
+            deadman    = self.deadman
+            raw_lin    = self.raw_linear
+            raw_ang    = self.raw_angular
+            boost      = self.boost
+            mode       = self.mode
+
+        cmd = Twist()
+
+        if not estop and deadman and mode == 'MANUAL':
+            # Smoothing filter
+            self.linear  = (1 - SMOOTH) * self.linear  + SMOOTH * raw_lin
+            self.angular = (1 - SMOOTH) * self.angular + SMOOTH * raw_ang
+
+            # Apply boost
+            mult = BOOST_MULT if boost else 1.0
+            lin  = self.linear  * MAX_LINEAR  * mult
+            ang  = self.angular * MAX_ANGULAR * mult
+
+            # Clamp
+            lin = max(-MAX_LINEAR  * BOOST_MULT,
+                  min( MAX_LINEAR  * BOOST_MULT, lin))
+            ang = max(-MAX_ANGULAR * BOOST_MULT,
+                  min( MAX_ANGULAR * BOOST_MULT, ang))
+
+            cmd.linear.x  = lin
+            cmd.angular.z = ang
+        else:
+            # Immediate stop
             self.linear  = 0.0
             self.angular = 0.0
 
-    def _publish(self):
-        # Publish cmd_vel
-        cmd = Twist()
-        if not self.estop and self.mode == 'MANUAL':
-            cmd.linear.x  = self.linear
-            cmd.angular.z = self.angular
         self.cmd_pub.publish(cmd)
 
         # Status
         s = String()
-        if self.estop:
-            s.data = '[JOY] 🛑 ESTOP'
-        elif self.mode == 'AUTO':
-            s.data = '[JOY] AUTO mode — joystick disabled'
+        if estop:
+            s.data = '[JOY] 🛑 ESTOP — Press HOME to clear'
+        elif not deadman:
+            s.data = '[JOY] Hold RB to move!'
+        elif mode == 'AUTO':
+            s.data = '[JOY] AUTO mode'
         else:
-            s.data = (f'[JOY] MANUAL | '
-                      f'linear={self.linear:.2f} '
-                      f'angular={self.angular:.2f}')
+            s.data = (f'[JOY] lin={cmd.linear.x:.2f} '
+                      f'ang={cmd.angular.z:.2f} '
+                      f'boost={boost}')
         self.status_pub.publish(s)
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = JoystickNode()
+
+    def shutdown(sig, frame):
+        print('\nShutting down...')
+        cmd = Twist()
+        node.cmd_pub.publish(cmd)
+        try:
+            node.destroy_node()
+            rclpy.shutdown()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT,  shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except SystemExit:
         pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
