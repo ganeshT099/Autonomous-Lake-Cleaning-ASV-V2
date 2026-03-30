@@ -44,7 +44,7 @@ setup(
 	entry_points={
     	'console_scripts': [
         'thruster_node = asv_manual_control.thruster_node:main',
-        'joy_thruster_node = asv_manual_control.joy_thruster_node:main',
+        'joy_node = asv_manual_control.joy_node:main',
     ],
 },
 )
