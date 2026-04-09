@@ -1,26 +1,20 @@
 from setuptools import setup
-import os
-from glob import glob
+
 package_name = 'asv_thruster'
+
 setup(
     name=package_name,
-    version='0.1.0',
+    version='0.0.0',
     packages=[package_name],
-    data_files=[
-        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
-    ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ASV Team',
-    maintainer_email='gt0908@srmist.edu.in',
-    description='Thruster control node for ASV',
-    license='MIT',
+    maintainer='alcsv',
+    maintainer_email='alcsv@todo.todo',
+    description='ASV Thruster Control',
+    license='TODO',
     entry_points={
         'console_scripts': [
-            'asv_thruster_node = asv_thruster.thruster_node:main',
+            'asv_thruster_node = asv_thruster.asv_thruster_node:main',
         ],
     },
 )
