@@ -1,11 +1,11 @@
-from setuptools import setup
+from setuptools import find_packages, setup
 
-package_name = 'asv_imu'
+package_name = 'asv_control'
 
 setup(
     name=package_name,
-    version='0.1.0',
-    packages=[package_name],
+    version='0.0.0',
+    packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -13,13 +13,13 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='ASV Team',
-    maintainer_email='gt0908@srmist.edu.in',
-    description='IMU node for ASV',
+    maintainer='alcsv',
+    maintainer_email='alcsv@todo.todo',
+    description='ASV control node',
     license='MIT',
     entry_points={
         'console_scripts': [
-            'imu_node = asv_imu.imu_node:main',
+            'control_node = asv_control.control_node:main',
         ],
     },
 )

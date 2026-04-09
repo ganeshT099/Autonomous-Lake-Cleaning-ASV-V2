@@ -2,51 +2,63 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 import serial
+from rclpy.qos import QoSProfile
 
 class IMUNode(Node):
     def __init__(self):
         super().__init__('imu_node')
 
+        # Serial
         self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
 
-        self.publisher_ = self.create_publisher(Imu, '/imu/data', 10)
+        # ✅ MATCH SYSTEM QoS (RELIABLE)
+        qos = QoSProfile(depth=10)
 
-        self.timer = self.create_timer(0.05, self.read_imu)
+        self.publisher_ = self.create_publisher(Imu, '/asv/imu/data', qos)
+
+        # ✅ Stable rate
+        self.timer = self.create_timer(0.2, self.read_imu)  # 5 Hz
 
     def read_imu(self):
         try:
             line = self.ser.readline().decode(errors='ignore').strip()
+
+            if not line or ',' not in line:
+                return
+
             data = line.split(',')
 
-            if len(data) == 6:
-                ax, ay, az = map(float, data[:3])
-                gx, gy, gz = map(float, data[3:])
+            if len(data) != 6:
+                return
 
-                msg = Imu()
+            ax, ay, az = map(float, data[:3])
+            gx, gy, gz = map(float, data[3:])
 
-                # 🔥 REQUIRED HEADER
-                msg.header.stamp = self.get_clock().now().to_msg()
-                msg.header.frame_id = "imu_link"
+            msg = Imu()
 
-                # Acceleration (m/s^2)
-                msg.linear_acceleration.x = ax * 9.81
-                msg.linear_acceleration.y = ay * 9.81
-                msg.linear_acceleration.z = az * 9.81
+            # Header
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "imu_link"
 
-                # Gyro (rad/s)
-                msg.angular_velocity.x = gx * 0.01745
-                msg.angular_velocity.y = gy * 0.01745
-                msg.angular_velocity.z = gz * 0.01745
+            # Acceleration
+            msg.linear_acceleration.x = ax * 9.81
+            msg.linear_acceleration.y = ay * 9.81
+            msg.linear_acceleration.z = az * 9.81
 
-                # 🔥 VERY IMPORTANT (fix buffer error)
-                msg.orientation_covariance[0] = -1.0
-                msg.angular_velocity_covariance[0] = -1.0
-                msg.linear_acceleration_covariance[0] = -1.0
+            # Gyro
+            msg.angular_velocity.x = gx * 0.01745
+            msg.angular_velocity.y = gy * 0.01745
+            msg.angular_velocity.z = gz * 0.01745
 
-                self.publisher_.publish(msg)
+            # Required fields
+            msg.orientation_covariance[0] = -1.0
+            msg.angular_velocity_covariance[0] = -1.0
+            msg.linear_acceleration_covariance[0] = -1.0
 
-        except Exception as e:
-            self.get_logger().warn(f"Error: {e}")
+            self.publisher_.publish(msg)
+
+        except:
+            pass
 
 
 def main(args=None):
