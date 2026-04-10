@@ -13,15 +13,15 @@ import time
 app = Flask(__name__)
 
 frame = None
-processing = False
 
 
-class CameraNode(Node):
+class CameraServer(Node):
     def __init__(self):
-        super().__init__('asv_camera_server')
+        super().__init__('camera_server')
 
         self.bridge = CvBridge()
 
+        # 🔥 MATCH CAMERA NODE QoS
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -36,21 +36,12 @@ class CameraNode(Node):
         )
 
     def callback(self, msg):
-        global frame, processing
-
-        if processing:
-            return
-
-        processing = True
-
+        global frame
         try:
             img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
-            img = cv2.resize(img, (640, 480))
             frame = img
-        except Exception as e:
-            print("cv_bridge error:", e)
-
-        processing = False
+        except:
+            pass
 
 
 def generate():
@@ -58,6 +49,7 @@ def generate():
     while True:
         if frame is not None:
             _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' +
                    buffer.tobytes() + b'\r\n')
@@ -67,7 +59,8 @@ def generate():
 
 @app.route('/video')
 def video():
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 def ros_spin(node):
@@ -76,13 +69,13 @@ def ros_spin(node):
 
 def main():
     rclpy.init()
-    node = CameraNode()
+    node = CameraServer()
 
     threading.Thread(target=ros_spin, args=(node,), daemon=True).start()
 
-    print("🎥 Camera → http://<JETSON_IP>:5000/video")
+    print("🎥 Camera → http://192.168.0.50:5000/video")
 
-    app.run(host='0.0.0.0', port=5000, threaded=True)
+    app.run(host='0.0.0.0', port=5000)
 
 
 if __name__ == '__main__':
