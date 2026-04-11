@@ -20,6 +20,9 @@ setup(
     entry_points={
         'console_scripts': [
             'control_node = asv_control.control_node:main',
+		'geofence_node = asv_control.geofence_node:main',
+			'zigzag_planner_node = asv_control.zigzag_planner_node:main',
+				'waypoint_follower_node = asv_control.waypoint_follower_node:main',
         ],
     },
 )
