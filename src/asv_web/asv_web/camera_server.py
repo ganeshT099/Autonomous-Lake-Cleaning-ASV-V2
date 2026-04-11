@@ -1,81 +1,104 @@
+#!/usr/bin/env python3
+
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
-from flask import Flask, Response
+from sensor_msgs.msg import CompressedImage
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-import cv2
 import threading
 import time
 
+from flask import Flask, Response
+
 app = Flask(__name__)
 
-frame = None
+latest_frame = None
+lock = threading.Lock()
 
 
-class CameraServer(Node):
+class CameraSubscriber(Node):
     def __init__(self):
-        super().__init__('camera_server')
+        super().__init__('camera_stream_node')
 
-        self.bridge = CvBridge()
-
-        # 🔥 MATCH CAMERA NODE QoS
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
-        self.create_subscription(
-            Image,
-            '/asv/camera/image_raw',
-            self.callback,
+        self.last_time = time.time()
+
+        self.subscription = self.create_subscription(
+            CompressedImage,
+            '/asv/camera/image_raw/compressed',
+            self.listener_callback,
             qos
         )
 
-    def callback(self, msg):
-        global frame
+        self.get_logger().info("Camera Subscriber Started")
+
+    def listener_callback(self, msg):
+        global latest_frame
+
+        # Limit to ~10 Hz
+        if time.time() - self.last_time < 0.1:
+            return
+        self.last_time = time.time()
+
         try:
-            img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
-            frame = img
-        except:
-            pass
+            with lock:
+                latest_frame = bytes(msg.data)
+        except Exception as e:
+            self.get_logger().error(f"Frame error: {e}")
 
 
 def generate():
-    global frame
+    global latest_frame
+
     while True:
-        if frame is not None:
-            _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+        with lock:
+            frame = latest_frame
 
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' +
-                   buffer.tobytes() + b'\r\n')
+        if frame is None:
+            time.sleep(0.05)
+            continue
 
-        time.sleep(0.05)
+        yield (
+            b'--frame\r\n'
+            b'Content-Type: image/jpeg\r\n\r\n' +
+            frame +
+            b'\r\n'
+        )
+
+        time.sleep(0.1)
 
 
 @app.route('/video')
-def video():
+def video_feed():
     return Response(generate(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
-def ros_spin(node):
-    rclpy.spin(node)
+@app.route('/')
+def index():
+    return '<html><body><img src="/video" width="640" height="480"></body></html>'
 
 
 def main():
     rclpy.init()
-    node = CameraServer()
 
-    threading.Thread(target=ros_spin, args=(node,), daemon=True).start()
+    node = CameraSubscriber()
 
-    print("🎥 Camera → http://192.168.0.50:5000/video")
+    ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    ros_thread.start()
 
-    app.run(host='0.0.0.0', port=5000)
+    print("Camera stream: http://192.168.0.50:5000/video")
+
+    app.run(host='0.0.0.0', port=5000, threaded=True)
+
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':
