@@ -15,11 +15,11 @@ import time
 import websockets
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix, CompressedImage
 from geometry_msgs.msg import Twist
 
-SERVER = "ws://192.168.0.15:8765/ws/device"
+SERVER = "wss://asv-server-1.onrender.com/ws/device"
 
 _latest_frame: bytes = None
 _frame_lock = threading.Lock()
@@ -71,7 +71,7 @@ class ASVBridgeNode(Node):
             depth=1,
         )
 
-        self.create_subscription(NavSatFix, "/asv/gps/fix", self._gps_cb, 10)
+        self.create_subscription(NavSatFix, "/asv/gps/fix", self._gps_cb, qos_profile_sensor_data)
         self.create_subscription(
             CompressedImage,
             "/asv/camera/image_raw/compressed",
