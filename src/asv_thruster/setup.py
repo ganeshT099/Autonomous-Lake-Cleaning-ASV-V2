@@ -15,6 +15,7 @@ setup(
     entry_points={
         'console_scripts': [
             'asv_thruster_node = asv_thruster.asv_thruster_node:main',
+                'asv_thruster_auto_node = asv_thruster.asv_thruster_auto_node:main',
         ],
     },
 )

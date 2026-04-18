@@ -8,7 +8,7 @@ class SafetyNode(Node):
     def __init__(self):
         super().__init__('safety_node')
 
-        # 🔵 SUBSCRIBE COMMAND FROM CONTROLLER
+        # 🔵 SUBSCRIBE RAW COMMAND
         self.cmd_sub = self.create_subscription(
             Twist,
             '/asv/cmd_vel_raw',
@@ -24,35 +24,42 @@ class SafetyNode(Node):
             10
         )
 
-        # 🔵 FINAL COMMAND TO THRUSTER
+        # 🔵 SAFE OUTPUT TO THRUSTER
         self.cmd_pub = self.create_publisher(
             Twist,
             '/asv/cmd_vel',
             10
         )
 
+        # STATE
         self.inside = True
+        self.last_cmd = Twist()
 
         self.get_logger().info("🛡 Safety node ACTIVE")
 
+    # ---------------- GEOFENCE ----------------
     def geo_callback(self, msg):
         self.inside = msg.data
 
-    def cmd_callback(self, msg):
-        safe_cmd = Twist()
-
-        if self.inside:
-            # ✅ Pass command
-            safe_cmd = msg
-        else:
-            # 🚨 STOP
-            safe_cmd.linear.x = 0.0
-            safe_cmd.angular.z = 0.0
-
+        if not self.inside:
             self.get_logger().warn(
                 "🚨 GEOFENCE BREACH → STOPPING",
                 throttle_duration_sec=2.0
             )
+
+    # ---------------- CMD ----------------
+    def cmd_callback(self, msg):
+        self.last_cmd = msg
+
+        safe_cmd = Twist()
+
+        if self.inside:
+            # ✅ PASS THROUGH
+            safe_cmd = msg
+        else:
+            # 🚨 FORCE STOP
+            safe_cmd.linear.x = 0.0
+            safe_cmd.angular.z = 0.0
 
         self.cmd_pub.publish(safe_cmd)
 
