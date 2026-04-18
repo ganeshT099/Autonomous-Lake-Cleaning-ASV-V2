@@ -21,6 +21,8 @@ setup(
     entry_points={
         'console_scripts': [
             'asv_localization_node = asv_localization.localization_node:main',
+		'gps_to_local_node = asv_localization.gps_to_local_node:main',
+			'boat_viz_node = asv_localization.boat_viz_node:main',
         ],
     },
 )

@@ -1,132 +1,114 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import NavSatFix
-from geometry_msgs.msg import Twist, PoseArray
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point, PoseStamped
+from std_msgs.msg import Bool
+
 import math
 
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
-
-class WaypointFollower(Node):
+class GeofenceNode(Node):
     def __init__(self):
-        super().__init__('waypoint_follower')
+        super().__init__('geofence_node')
 
-        # ✅ QoS (MATCH GPS)
-        qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE
-        )
+        # 🔥 PARAMETERS
+        self.radius = 12.0   # meters (change here: 10–15)
 
-        # 🔵 SUBSCRIBE GPS
-        self.gps_sub = self.create_subscription(
-            NavSatFix,
-            '/asv/gps/fix',
-            self.gps_callback,
-            qos
-        )
-
-        # 🔵 SUBSCRIBE WAYPOINTS
-        self.wp_sub = self.create_subscription(
-            PoseArray,
-            '/asv/waypoints',
-            self.wp_callback,
+        # 🔵 SUBSCRIBE LOCAL POSITION
+        self.sub = self.create_subscription(
+            PoseStamped,
+            '/asv/local_pose',
+            self.pose_callback,
             10
         )
 
-        # 🔵 CMD VEL PUB
-        self.cmd_pub = self.create_publisher(
-            Twist,
-            '/asv/cmd_vel',
+        # 🔵 STATUS PUB
+        self.status_pub = self.create_publisher(
+            Bool,
+            '/asv/geofence_status',
             10
         )
 
-        # 🔥 INTERNAL STATE
-        self.waypoints = []
-        self.current_index = 0
-        self.ready = False
-
-        self.get_logger().info("🚀 Waypoint follower started")
-
-    # ---------------- WAYPOINT CALLBACK ----------------
-    def wp_callback(self, msg):
-        self.waypoints = []
-
-        for pose in msg.poses:
-            lat = pose.position.x
-            lon = pose.position.y
-            self.waypoints.append((lat, lon))
-
-        self.current_index = 0
-        self.ready = True
-
-        self.get_logger().info(f"📍 Received {len(self.waypoints)} waypoints")
-
-    # ---------------- GPS CALLBACK ----------------
-    def gps_callback(self, msg):
-        if not self.ready or len(self.waypoints) == 0:
-            return
-
-        current_lat = msg.latitude
-        current_lon = msg.longitude
-
-        target_lat, target_lon = self.waypoints[self.current_index]
-
-        distance = self.get_distance(current_lat, current_lon, target_lat, target_lon)
-        heading_error = self.get_heading_error(current_lat, current_lon, target_lat, target_lon)
-
-        cmd = Twist()
-
-        # 🎯 Reached waypoint
-        if distance < 1.5:
-            self.get_logger().info(f"✅ Reached WP {self.current_index}")
-
-            self.current_index += 1
-
-            if self.current_index >= len(self.waypoints):
-                self.get_logger().info("🏁 Mission Complete")
-                cmd.linear.x = 0.0
-                cmd.angular.z = 0.0
-                self.cmd_pub.publish(cmd)
-                return
-
-            return
-
-        # 🚤 Movement
-        cmd.linear.x = 0.4
-
-        # Smooth turning
-        cmd.angular.z = max(min(heading_error * 0.8, 1.0), -1.0)
-
-        self.cmd_pub.publish(cmd)
-
-        self.get_logger().info(
-            f"📍 Dist:{distance:.2f}m | HeadingErr:{heading_error:.2f} | WP:{self.current_index}"
+        # 🔵 RVIZ MARKER PUB
+        self.marker_pub = self.create_publisher(
+            Marker,
+            '/asv/geofence_viz',
+            10
         )
 
-    # ---------------- DISTANCE ----------------
-    def get_distance(self, lat1, lon1, lat2, lon2):
-        R = 6371000
-        phi1 = math.radians(lat1)
-        phi2 = math.radians(lat2)
+        self.get_logger().info(f"🚧 Circular Geofence ACTIVE (R={self.radius}m)")
 
-        dphi = math.radians(lat2 - lat1)
-        dlambda = math.radians(lon2 - lon1)
+    # ---------------- CHECK ----------------
+    def is_inside(self, x, y):
+        distance = math.sqrt(x**2 + y**2)
+        return distance <= self.radius
 
-        a = math.sin(dphi/2)**2 + \
-            math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    # ---------------- VISUAL ----------------
+    def publish_circle(self):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = self.get_clock().now().to_msg()
 
-        return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
+        marker.ns = "geofence"
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
 
-    # ---------------- HEADING ----------------
-    def get_heading_error(self, lat1, lon1, lat2, lon2):
-        desired = math.atan2(lon2 - lon1, lat2 - lat1)
-        return desired
+        marker.scale.x = 0.1  # line thickness
+
+        # 🔥 RED circle
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+
+        marker.points = []
+
+        num_points = 50
+
+        for i in range(num_points + 1):
+            angle = 2 * math.pi * i / num_points
+            x = self.radius * math.cos(angle)
+            y = self.radius * math.sin(angle)
+
+            p = Point()
+            p.x = x
+            p.y = y
+            p.z = 0.0
+
+            marker.points.append(p)
+
+        self.marker_pub.publish(marker)
+
+    # ---------------- CALLBACK ----------------
+    def pose_callback(self, msg):
+        x = msg.pose.position.x
+        y = msg.pose.position.y
+
+        inside = self.is_inside(x, y)
+
+        status = Bool()
+        status.data = inside
+        self.status_pub.publish(status)
+
+        # 🔥 Always visualize
+        self.publish_circle()
+
+        if inside:
+            self.get_logger().info(
+                f"✅ INSIDE ({x:.2f}, {y:.2f})",
+                throttle_duration_sec=2.0
+            )
+        else:
+            self.get_logger().warn(
+                f"🚨 OUTSIDE ({x:.2f}, {y:.2f})",
+                throttle_duration_sec=2.0
+            )
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = WaypointFollower()
+    node = GeofenceNode()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()

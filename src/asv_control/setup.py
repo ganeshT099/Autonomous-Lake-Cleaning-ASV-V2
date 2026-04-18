@@ -23,6 +23,7 @@ setup(
 		'geofence_node = asv_control.geofence_node:main',
 			'zigzag_planner_node = asv_control.zigzag_planner_node:main',
 				'waypoint_follower_node = asv_control.waypoint_follower_node:main',
+					'safety_node = asv_control.safety_node:main',
         ],
     },
 )
