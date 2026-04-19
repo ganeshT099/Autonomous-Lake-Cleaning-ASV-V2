@@ -12,5 +12,6 @@ def generate_launch_description():
         Node(package='asv_gps',      executable='gps_node',           output='screen'),
         Node(package='asv_thruster', executable='asv_thruster_node',  output='screen'),
         Node(package='asv_web',      executable='ws_bridge',          output='screen'),
+        Node(package='asv_web',      executable='autonomous_pilot',   output='screen'),
 
     ])
