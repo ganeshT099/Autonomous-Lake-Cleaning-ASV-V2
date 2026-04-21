@@ -19,7 +19,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_
 from sensor_msgs.msg import NavSatFix, CompressedImage
 from geometry_msgs.msg import Twist
 
-SERVER = "wss://asv-server-1.onrender.com/ws/device"
+SERVER = "ws://localhost:8080/ws/device"
 
 _latest_frame: bytes = None
 _frame_lock = threading.Lock()

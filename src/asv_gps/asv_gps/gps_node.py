@@ -20,7 +20,7 @@ class GPSNode(Node):
         super().__init__('asv_gps_node')
 
         # PARAMETERS
-        self.declare_parameter('port', '/dev/ttyACM0')
+        self.declare_parameter('port', '/dev/ttyACM1')
         self.declare_parameter('baud_rate', 38400)
         self.declare_parameter('frame_id', 'gps_link')
         self.declare_parameter('publish_hz', 5.0)  # 🔥 reduced rate

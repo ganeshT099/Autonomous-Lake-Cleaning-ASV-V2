@@ -20,7 +20,7 @@ from sensor_msgs.msg import NavSatFix, Imu
 from geometry_msgs.msg import Twist
 import websockets
 
-RELAY_URL = "wss://asv-server-1.onrender.com/ws/auto_pilot"
+RELAY_URL = "ws://localhost:8080/ws/auto_pilot"
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 DEG2RAD = math.pi / 180
@@ -91,15 +91,17 @@ class AutonomousNode(Node):
         self.gps_ok  = False
 
         # ── Mission state ─────────────────────────────────────────────
-        self.waypoints   = []       # [[lat, lon], ...]
-        self.boundary    = []       # [[lat, lon], ...] geofence polygon
-        self.wp_idx      = 0
-        self.running     = False
-        self.config      = {}
-        self.cte         = 0.0
-        self.cte_history = []
-        self.lock        = threading.Lock()
-        self.on_status   = None
+        self.waypoints        = []       # [[lat, lon], ...]
+        self.boundary         = []       # [[lat, lon], ...] geofence polygon
+        self.wp_idx           = 0
+        self.running          = False
+        self.config           = {}
+        self.cte              = 0.0
+        self.cte_history      = []
+        self.geofence_armed   = False    # arms once boat enters boundary (not before)
+        self.calibration_mode = False    # skip geofence entirely for cal runs
+        self.lock             = threading.Lock()
+        self.on_status        = None
 
         # Control loop at 10 Hz
         self.create_timer(0.1, self._control_loop)
@@ -122,16 +124,20 @@ class AutonomousNode(Node):
 
     # ── Mission control ───────────────────────────────────────────────
     def start_mission(self, waypoints, boundary, config):
+        is_cal = config.get("calibration", False)
         with self.lock:
-            self.waypoints   = waypoints
-            self.boundary    = boundary
-            self.wp_idx      = 0
-            self.running     = True
-            self.config      = config
-            self.cte         = 0.0
-            self.cte_history = []
+            self.waypoints        = waypoints
+            self.boundary         = boundary
+            self.wp_idx           = 0
+            self.running          = True
+            self.config           = config
+            self.cte              = 0.0
+            self.cte_history      = []
+            self.geofence_armed   = False   # always reset; arms on first boundary entry
+            self.calibration_mode = is_cal
         self.get_logger().info(
-            f"Mission started: {len(waypoints)} wps, {len(boundary)}-pt geofence")
+            f"Mission started: {len(waypoints)} wps, {len(boundary)}-pt fence"
+            f"{'  [CALIBRATION — no geofence]' if is_cal else ''}")
 
     def stop_mission(self):
         with self.lock:
@@ -152,11 +158,19 @@ class AutonomousNode(Node):
             boundary  = self.boundary
             config    = self.config
 
-        # ── Geofence check ────────────────────────────────────────────
-        if boundary and not point_in_polygon(self.lat, self.lon, boundary):
-            self._emergency_stop(
-                f"GEOFENCE BREACH at {self.lat:.6f},{self.lon:.6f} — stopping")
-            return
+        # ── Geofence check (enter-then-arm — never fires on shore start) ─
+        # calibration_mode: skip entirely
+        # Otherwise: arm only after boat first enters the boundary;
+        # trigger only if boat WAS inside and now exits.
+        if boundary and not self.calibration_mode:
+            inside = point_in_polygon(self.lat, self.lon, boundary)
+            if inside:
+                self.geofence_armed = True          # boat is inside — arm it
+            elif self.geofence_armed:               # was inside, now outside
+                self._emergency_stop(
+                    f"GEOFENCE BREACH at {self.lat:.6f},{self.lon:.6f} — stopping")
+                return
+            # If not yet armed (still transiting from shore): pass through silently
 
         max_speed = float(config.get("speed",     0.5))
         lookahead = float(config.get("lookahead", 8.0))

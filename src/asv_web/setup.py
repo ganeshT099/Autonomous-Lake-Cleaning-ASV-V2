@@ -27,6 +27,7 @@ setup(
             'camera_server = asv_web.camera_server:main',
             'ws_bridge = asv_web.ws_bridge:main',
             'autonomous_pilot = asv_web.autonomous_pilot:main',
+            'local_server = asv_web.local_server:main',
         ],
     },
 )
