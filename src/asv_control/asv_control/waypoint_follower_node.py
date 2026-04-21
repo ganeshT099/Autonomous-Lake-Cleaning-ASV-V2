@@ -2,7 +2,7 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped, Twist, PoseArray
-from sensor_msgs.msg import Imu
+from std_msgs.msg import Float64
 
 import math
 
@@ -19,15 +19,15 @@ class WaypointFollower(Node):
             10
         )
 
-        # 🔵 SUBSCRIBE IMU
-        self.imu_sub = self.create_subscription(
-            Imu,
-            '/asv/imu/data',
-            self.imu_callback,
+        # 🔥 NEW → SUBSCRIBE FUSED HEADING
+        self.heading_sub = self.create_subscription(
+            Float64,
+            '/asv/heading',
+            self.heading_callback,
             10
         )
 
-        # 🔵 WAYPOINTS (LOCAL FRAME)
+        # 🔵 WAYPOINTS
         self.wp_sub = self.create_subscription(
             PoseArray,
             '/asv/waypoints',
@@ -35,7 +35,7 @@ class WaypointFollower(Node):
             10
         )
 
-        # 🔵 PUBLISH RAW CMD (goes to safety node)
+        # 🔵 CMD OUTPUT
         self.cmd_pub = self.create_publisher(
             Twist,
             '/asv/cmd_vel_raw',
@@ -47,21 +47,13 @@ class WaypointFollower(Node):
         self.current_index = 0
         self.ready = False
 
-        self.current_yaw = 0.0
+        self.current_heading = 0.0  # 🔥 fused heading
 
-        self.get_logger().info("🚀 Waypoint follower (LOCAL FRAME) started")
+        self.get_logger().info("🚀 Waypoint follower (FUSION MODE) started")
 
-    # ---------------- IMU CALLBACK ----------------
-    def imu_callback(self, msg):
-        # ⚠️ Simple integration (works but drifts slowly)
-        dt = 0.1
-        self.current_yaw += msg.angular_velocity.z * dt
-
-        # normalize [-pi, pi]
-        self.current_yaw = math.atan2(
-            math.sin(self.current_yaw),
-            math.cos(self.current_yaw)
-        )
+    # ---------------- HEADING CALLBACK ----------------
+    def heading_callback(self, msg):
+        self.current_heading = msg.data
 
     # ---------------- WAYPOINT CALLBACK ----------------
     def wp_callback(self, msg):
@@ -93,7 +85,8 @@ class WaypointFollower(Node):
         distance = math.sqrt(dx * dx + dy * dy)
         desired_heading = math.atan2(dy, dx)
 
-        heading_error = desired_heading - self.current_yaw
+        # 🔥 USE FUSED HEADING
+        heading_error = desired_heading - self.current_heading
         heading_error = math.atan2(
             math.sin(heading_error),
             math.cos(heading_error)
@@ -115,21 +108,20 @@ class WaypointFollower(Node):
 
             return
 
-        # 🔥 TURN-IN-PLACE (important for sharp turns)
+        # 🔥 TURN-IN-PLACE
         if abs(heading_error) > 0.6:
             cmd.linear.x = 0.0
         else:
-            # 🔥 SMOOTH SPEED CONTROL
             cmd.linear.x = 0.5 * (1 - abs(heading_error) / math.pi)
 
-        # 🔥 ANGULAR CONTROL (P controller)
+        # 🔥 ANGULAR CONTROL
         cmd.angular.z = max(min(heading_error * 1.5, 1.0), -1.0)
 
         self.cmd_pub.publish(cmd)
 
         # 🔍 DEBUG
         self.get_logger().info(
-            f"Dist:{distance:.2f} | Err:{heading_error:.2f} | Yaw:{self.current_yaw:.2f}",
+            f"Dist:{distance:.2f} | Err:{heading_error:.2f} | Heading:{self.current_heading:.2f}",
             throttle_duration_sec=1.0
         )
 

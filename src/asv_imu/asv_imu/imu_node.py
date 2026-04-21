@@ -83,9 +83,11 @@ class IMUNode(Node):
             if not self.calibrated:
                 self.samples.append(gz_r)
 
-                if len(self.samples) >= 100:  # ~10 sec
+                if len(self.samples) >= 100:
                     self.gz_bias = sum(self.samples) / len(self.samples)
                     self.calibrated = True
+
+                    self.yaw = 0.0  # ✅ FIX 4 (reset yaw)
 
                     self.get_logger().info(
                         f"✅ Calibration done! Gyro bias = {self.gz_bias:.5f}"
@@ -98,17 +100,22 @@ class IMUNode(Node):
             dt = (current_time - self.last_time).nanoseconds * 1e-9
             self.last_time = current_time
 
-            if dt <= 0:
-                return
+            # ✅ FIX 3 (dt safety)
+            if dt <= 0 or dt > 0.2:
+                dt = 0.1
 
             # ---------------- YAW ----------------
             gz_corrected = gz_r - self.gz_bias
 
-            # deadband (remove noise)
-            if abs(gz_corrected) < 0.02:
+            # deadband
+            if abs(gz_corrected) < 0.03:
                 gz_corrected = 0.0
 
             self.yaw += gz_corrected * dt
+
+            # ✅ FIX 2 (drift damping)
+            if abs(gz_corrected) < 0.005:
+                self.yaw *= 0.999
 
             # normalize
             while self.yaw > math.pi:
@@ -131,7 +138,9 @@ class IMUNode(Node):
 
             msg.angular_velocity.x = gx_r
             msg.angular_velocity.y = gy_r
-            msg.angular_velocity.z = gz_r
+
+            # ✅ FIX 1 (use corrected gyro)
+            msg.angular_velocity.z = gz_corrected
 
             msg.orientation.x = 0.0
             msg.orientation.y = 0.0
