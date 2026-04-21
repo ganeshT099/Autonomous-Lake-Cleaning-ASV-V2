@@ -1,32 +1,22 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import NavSatFix
-from geometry_msgs.msg import PoseArray, Pose
-import math
-
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from geometry_msgs.msg import PoseArray, Pose, PoseStamped
 
 
 class ZigZagPlanner(Node):
     def __init__(self):
         super().__init__('zigzag_planner')
 
-        qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE
+        # 🔵 LOCAL POSE SUB
+        self.sub = self.create_subscription(
+            PoseStamped,
+            '/asv/local_pose',
+            self.pose_callback,
+            10
         )
 
-        # GPS SUB
-        self.gps_sub = self.create_subscription(
-            NavSatFix,
-            '/asv/gps/fix',
-            self.gps_callback,
-            qos
-        )
-
-        # WAYPOINT PUB
-        self.wp_pub = self.create_publisher(
+        # 🔵 WAYPOINT PUB
+        self.pub = self.create_publisher(
             PoseArray,
             '/asv/waypoints',
             10
@@ -35,54 +25,48 @@ class ZigZagPlanner(Node):
         self.generated = False
         self.waypoints = []
 
-        self.get_logger().info("🚀 ZigZag Planner READY")
+        self.get_logger().info("🚀 ZigZag Planner (LOCAL FRAME) READY")
 
-    def gps_callback(self, msg):
+    def pose_callback(self, msg):
         if self.generated:
             return
 
-        lat = msg.latitude
-        lon = msg.longitude
+        start_x = msg.pose.position.x
+        start_y = msg.pose.position.y
 
-        self.get_logger().info(f"📍 Start: {lat:.6f}, {lon:.6f}")
+        self.get_logger().info(f"📍 Start LOCAL: {start_x:.2f}, {start_y:.2f}")
 
-        # 🔥 15m boundary
-        offset = 0.00015
+        # 🔥 DEFINE AREA (meters)
+        width = 15.0
+        height = 15.0
 
-        self.polygon = [
-            (lat - offset, lon - offset),
-            (lat - offset, lon + offset),
-            (lat + offset, lon + offset),
-            (lat + offset, lon - offset)
-        ]
+        x_min = start_x - width / 2
+        x_max = start_x + width / 2
+        y_min = start_y - height / 2
+        y_max = start_y + height / 2
 
-        self.generate_zigzag()
+        self.generate_zigzag(x_min, x_max, y_min, y_max)
         self.publish_waypoints()
 
         self.generated = True
 
     # ---------------- ZIGZAG ----------------
-    def generate_zigzag(self):
-        lat_min = min(p[0] for p in self.polygon)
-        lat_max = max(p[0] for p in self.polygon)
-        lon_min = min(p[1] for p in self.polygon)
-        lon_max = max(p[1] for p in self.polygon)
-
-        step = 0.00003
-        lat = lat_min
+    def generate_zigzag(self, x_min, x_max, y_min, y_max):
+        step = 2.0  # spacing in meters
+        y = y_min
         toggle = True
 
-        while lat < lat_max:
+        while y <= y_max:
             if toggle:
-                lon_range = [lon_min, lon_max]
+                x_range = [x_min, x_max]
             else:
-                lon_range = [lon_max, lon_min]
+                x_range = [x_max, x_min]
 
-            for lon in lon_range:
-                self.waypoints.append((lat, lon))
+            for x in x_range:
+                self.waypoints.append((x, y))
 
             toggle = not toggle
-            lat += step
+            y += step
 
         self.get_logger().info(f"✅ Generated {len(self.waypoints)} WPs")
 
@@ -92,14 +76,14 @@ class ZigZagPlanner(Node):
         msg.header.frame_id = "map"
         msg.header.stamp = self.get_clock().now().to_msg()
 
-        for lat, lon in self.waypoints:
+        for x, y in self.waypoints:
             p = Pose()
-            p.position.x = lat
-            p.position.y = lon
+            p.position.x = x
+            p.position.y = y
             p.position.z = 0.0
             msg.poses.append(p)
 
-        self.wp_pub.publish(msg)
+        self.pub.publish(msg)
 
         self.get_logger().info("📡 Waypoints published!")
 

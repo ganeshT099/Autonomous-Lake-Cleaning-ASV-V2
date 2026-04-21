@@ -1,28 +1,22 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import NavSatFix, Imu
-from geometry_msgs.msg import Twist, PoseArray
-import math
 
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from geometry_msgs.msg import PoseStamped, Twist, PoseArray
+from sensor_msgs.msg import Imu
+
+import math
 
 
 class WaypointFollower(Node):
     def __init__(self):
         super().__init__('waypoint_follower')
 
-        qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE
-        )
-
-        # 🔵 SUBSCRIBE GPS
-        self.gps_sub = self.create_subscription(
-            NavSatFix,
-            '/asv/gps/fix',
-            self.gps_callback,
-            qos
+        # 🔵 SUBSCRIBE LOCAL POSITION
+        self.pose_sub = self.create_subscription(
+            PoseStamped,
+            '/asv/local_pose',
+            self.pose_callback,
+            10
         )
 
         # 🔵 SUBSCRIBE IMU
@@ -30,10 +24,10 @@ class WaypointFollower(Node):
             Imu,
             '/asv/imu/data',
             self.imu_callback,
-            qos
+            10
         )
 
-        # 🔵 WAYPOINTS
+        # 🔵 WAYPOINTS (LOCAL FRAME)
         self.wp_sub = self.create_subscription(
             PoseArray,
             '/asv/waypoints',
@@ -41,10 +35,10 @@ class WaypointFollower(Node):
             10
         )
 
-        # 🔵 CMD VEL PUB
+        # 🔵 PUBLISH RAW CMD (goes to safety node)
         self.cmd_pub = self.create_publisher(
             Twist,
-            '/asv/cmd_vel',
+            '/asv/cmd_vel_raw',
             10
         )
 
@@ -55,14 +49,15 @@ class WaypointFollower(Node):
 
         self.current_yaw = 0.0
 
-        self.get_logger().info("🚀 Waypoint follower with IMU started")
+        self.get_logger().info("🚀 Waypoint follower (LOCAL FRAME) started")
 
     # ---------------- IMU CALLBACK ----------------
     def imu_callback(self, msg):
-        # Integrate yaw (simple)
-        self.current_yaw += msg.angular_velocity.z * 0.1
+        # ⚠️ Simple integration (works but drifts slowly)
+        dt = 0.1
+        self.current_yaw += msg.angular_velocity.z * dt
 
-        # normalize (-pi to pi)
+        # normalize [-pi, pi]
         self.current_yaw = math.atan2(
             math.sin(self.current_yaw),
             math.cos(self.current_yaw)
@@ -73,36 +68,32 @@ class WaypointFollower(Node):
         self.waypoints = []
 
         for pose in msg.poses:
-            lat = pose.position.x
-            lon = pose.position.y
-            self.waypoints.append((lat, lon))
+            x = pose.position.x
+            y = pose.position.y
+            self.waypoints.append((x, y))
 
         self.current_index = 0
         self.ready = True
 
         self.get_logger().info(f"📍 Received {len(self.waypoints)} waypoints")
 
-    # ---------------- GPS CALLBACK ----------------
-    def gps_callback(self, msg):
+    # ---------------- MAIN CONTROL ----------------
+    def pose_callback(self, msg):
         if not self.ready or len(self.waypoints) == 0:
             return
 
-        lat = msg.latitude
-        lon = msg.longitude
+        x = msg.pose.position.x
+        y = msg.pose.position.y
 
-        # ❌ Ignore invalid GPS
-        if lat == 0.0 and lon == 0.0:
-            return
+        target_x, target_y = self.waypoints[self.current_index]
 
-        target_lat, target_lon = self.waypoints[self.current_index]
+        dx = target_x - x
+        dy = target_y - y
 
-        distance = self.get_distance(lat, lon, target_lat, target_lon)
-        desired_heading = self.get_bearing(lat, lon, target_lat, target_lon)
+        distance = math.sqrt(dx * dx + dy * dy)
+        desired_heading = math.atan2(dy, dx)
 
-        # 🔥 KEY FIX
         heading_error = desired_heading - self.current_yaw
-
-        # normalize error
         heading_error = math.atan2(
             math.sin(heading_error),
             math.cos(heading_error)
@@ -110,7 +101,7 @@ class WaypointFollower(Node):
 
         cmd = Twist()
 
-        # 🎯 REACHED
+        # 🎯 WAYPOINT REACHED
         if distance < 1.5:
             self.get_logger().info(f"✅ Reached WP {self.current_index}")
             self.current_index += 1
@@ -118,45 +109,29 @@ class WaypointFollower(Node):
             if self.current_index >= len(self.waypoints):
                 self.get_logger().info("🏁 Mission Complete")
                 cmd.linear.x = 0.0
+                cmd.angular.z = 0.0
                 self.cmd_pub.publish(cmd)
                 return
 
             return
 
-        # 🚤 FORWARD SPEED
-        cmd.linear.x = 0.5
+        # 🔥 TURN-IN-PLACE (important for sharp turns)
+        if abs(heading_error) > 0.6:
+            cmd.linear.x = 0.0
+        else:
+            # 🔥 SMOOTH SPEED CONTROL
+            cmd.linear.x = 0.5 * (1 - abs(heading_error) / math.pi)
 
-        # 🔥 TURN CONTROL (IMU BASED)
+        # 🔥 ANGULAR CONTROL (P controller)
         cmd.angular.z = max(min(heading_error * 1.5, 1.0), -1.0)
 
         self.cmd_pub.publish(cmd)
 
+        # 🔍 DEBUG
         self.get_logger().info(
-            f"Dist:{distance:.2f} | Err:{heading_error:.2f} | Yaw:{self.current_yaw:.2f}"
+            f"Dist:{distance:.2f} | Err:{heading_error:.2f} | Yaw:{self.current_yaw:.2f}",
+            throttle_duration_sec=1.0
         )
-
-    # ---------------- DISTANCE ----------------
-    def get_distance(self, lat1, lon1, lat2, lon2):
-        R = 6371000
-        phi1 = math.radians(lat1)
-        phi2 = math.radians(lat2)
-
-        dphi = math.radians(lat2 - lat1)
-        dlambda = math.radians(lon2 - lon1)
-
-        a = math.sin(dphi/2)**2 + \
-            math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-
-        return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
-
-    # ---------------- BEARING ----------------
-    def get_bearing(self, lat1, lon1, lat2, lon2):
-        y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
-        x = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) - \
-            math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
-            math.cos(math.radians(lon2 - lon1))
-
-        return math.atan2(y, x)
 
 
 def main(args=None):
