@@ -3,6 +3,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 import serial
 import math
+import time
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
@@ -12,8 +13,11 @@ class IMUNode(Node):
         super().__init__('imu_node')
 
         # 🔌 Serial
-        self.ser = serial.Serial('/dev/imu', 115200, timeout=1)
+        self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+        time.sleep(2)
         self.ser.reset_input_buffer()
+
+        self.get_logger().info("🔥 USING ttyUSB1 IMU")
 
         # QoS
         qos = QoSProfile(
@@ -27,17 +31,17 @@ class IMUNode(Node):
         # Timer
         self.timer = self.create_timer(0.1, self.read_imu)
 
-        # 🔧 Filter
+        # Filters
         self.ax_f = 0.0
         self.ay_f = 0.0
         self.az_f = 0.0
         self.alpha = 0.8
 
-        # 🔥 Yaw
+        # Yaw
         self.yaw = 0.0
         self.last_time = self.get_clock().now()
 
-        # 🔥 CALIBRATION
+        # Calibration
         self.gz_bias = 0.0
         self.calibrated = False
         self.samples = []
@@ -46,6 +50,10 @@ class IMUNode(Node):
 
     def read_imu(self):
         try:
+            # 🔥 SAFE READ
+            if self.ser.in_waiting == 0:
+                return
+
             line = self.ser.readline()
             if not line:
                 return
@@ -65,7 +73,10 @@ class IMUNode(Node):
             except:
                 return
 
-            # 🔧 Filter accel
+            # 🔥 DEBUG RAW
+            self.get_logger().info(f"RAW gz: {gz}", throttle_duration_sec=1.0)
+
+            # Filter accel
             self.ax_f = self.alpha * self.ax_f + (1 - self.alpha) * ax
             self.ay_f = self.alpha * self.ay_f + (1 - self.alpha) * ay
             self.az_f = self.alpha * self.az_f + (1 - self.alpha) * az
@@ -74,7 +85,7 @@ class IMUNode(Node):
             ay_m = self.ay_f * 9.81
             az_m = self.az_f * 9.81
 
-            # 🔧 Gyro rad/s
+            # Gyro rad/s
             gx_r = gx * 0.01745
             gy_r = gy * 0.01745
             gz_r = gz * 0.01745
@@ -83,14 +94,18 @@ class IMUNode(Node):
             if not self.calibrated:
                 self.samples.append(gz_r)
 
-                if len(self.samples) >= 100:
+                # 🔥 DEBUG CALIBRATION COUNT
+                self.get_logger().info(f"Calibrating... {len(self.samples)}")
+
+                # 🔥 FAST CALIBRATION (20 samples)
+                if len(self.samples) >= 20:
                     self.gz_bias = sum(self.samples) / len(self.samples)
                     self.calibrated = True
 
-                    self.yaw = 0.0  # ✅ FIX 4 (reset yaw)
+                    self.yaw = 0.0
 
                     self.get_logger().info(
-                        f"✅ Calibration done! Gyro bias = {self.gz_bias:.5f}"
+                        f"✅ Calibration done! Bias = {self.gz_bias:.5f}"
                     )
 
                 return
@@ -100,30 +115,25 @@ class IMUNode(Node):
             dt = (current_time - self.last_time).nanoseconds * 1e-9
             self.last_time = current_time
 
-            # ✅ FIX 3 (dt safety)
             if dt <= 0 or dt > 0.2:
                 dt = 0.1
 
             # ---------------- YAW ----------------
             gz_corrected = gz_r - self.gz_bias
 
-            # deadband
             if abs(gz_corrected) < 0.03:
                 gz_corrected = 0.0
 
             self.yaw += gz_corrected * dt
 
-            # ✅ FIX 2 (drift damping)
+            # Drift damping
             if abs(gz_corrected) < 0.005:
                 self.yaw *= 0.999
 
-            # normalize
-            while self.yaw > math.pi:
-                self.yaw -= 2 * math.pi
-            while self.yaw < -math.pi:
-                self.yaw += 2 * math.pi
+            # Normalize
+            self.yaw = math.atan2(math.sin(self.yaw), math.cos(self.yaw))
 
-            # ---------------- QUATERNION ----------------
+            # Quaternion
             cy = math.cos(self.yaw * 0.5)
             sy = math.sin(self.yaw * 0.5)
 
@@ -138,8 +148,6 @@ class IMUNode(Node):
 
             msg.angular_velocity.x = gx_r
             msg.angular_velocity.y = gy_r
-
-            # ✅ FIX 1 (use corrected gyro)
             msg.angular_velocity.z = gz_corrected
 
             msg.orientation.x = 0.0
@@ -153,7 +161,6 @@ class IMUNode(Node):
 
             self.publisher_.publish(msg)
 
-            # 🔥 Clean log
             self.get_logger().info(
                 f"[IMU] yaw={math.degrees(self.yaw):.1f} deg",
                 throttle_duration_sec=1.0
