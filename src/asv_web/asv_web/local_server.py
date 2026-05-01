@@ -236,7 +236,7 @@ async def _bridge_device():
                         try:    parsed = json.loads(raw)
                         except: continue
                         mtype = parsed.get("type", "")
-                        if mtype == "joy" and device:
+                        if mtype in ("joy", "camera_select", "thruster_test", "thruster_set_neutral") and device:
                             try: await device.send_text(raw)
                             except: pass
 

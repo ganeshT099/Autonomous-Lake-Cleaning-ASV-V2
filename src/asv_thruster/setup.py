@@ -14,8 +14,12 @@ setup(
     license='TODO',
     entry_points={
         'console_scripts': [
+            # NEW Arduino bridge node
+            'ardu_thruster = asv_thruster.ardu_thruster:main',
+
+            # existing nodes (keep if needed)
             'asv_thruster_node = asv_thruster.asv_thruster_node:main',
-                'asv_thruster_auto_node = asv_thruster.asv_thruster_auto_node:main',
+            'asv_thruster_auto_node = asv_thruster.asv_thruster_auto_node:main',
         ],
     },
 )

@@ -13,6 +13,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix, CompressedImage
 from geometry_msgs.msg import Twist
+from std_msgs.msg import Int32MultiArray
 
 SERVER = "ws://localhost:8080/ws/device"
 
@@ -77,7 +78,9 @@ class ASVBridgeNode(Node):
         self.create_subscription(NavSatFix, "/asv/gps/fix", self._gps_cb, qos_profile_sensor_data)
         self.create_subscription(CompressedImage, "/asv/camera/image_raw/compressed", self._cam_cb, qos_be)
         self.create_subscription(Twist, "/cmd_vel", self._cmdvel_cb, 10)
-        self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._cmd_pub         = self.create_publisher(Twist,           "/cmd_vel",                  10)
+        self._direct_pwm_pub  = self.create_publisher(Int32MultiArray, "/asv/thruster/direct_pwm",  10)
+        self._set_neutral_pub = self.create_publisher(Int32MultiArray, "/asv/thruster/set_neutral", 10)
         self.get_logger().info("ASV Bridge Node v7 ready (on-demand camera)")
 
     def _gps_cb(self, msg):
@@ -110,6 +113,16 @@ class ASVBridgeNode(Node):
         self._cmd_pub.publish(msg)
         self.cmd_linear  = linear
         self.cmd_angular = angular
+
+    def publish_direct_pwm(self, left, right):
+        msg = Int32MultiArray()
+        msg.data = [int(left), int(right)]
+        self._direct_pwm_pub.publish(msg)
+
+    def publish_set_neutral(self, left, right):
+        msg = Int32MultiArray()
+        msg.data = [int(left), int(right)]
+        self._set_neutral_pub.publish(msg)
 
 
 def _process_raw_frames():
@@ -267,6 +280,15 @@ async def _recv_commands(ws):
             elif t == "joy":
                 lin, ang = compute_cmd_vel(data.get("axes", []), data.get("buttons", []))
                 _node.publish_cmd_vel(lin, ang)
+            elif t == "thruster_test":
+                l = max(1000, min(2000, int(data.get("left",  1500))))
+                r = max(1000, min(2000, int(data.get("right", 1500))))
+                _node.publish_direct_pwm(l, r)
+            elif t == "thruster_set_neutral":
+                l = max(1000, min(2000, int(data.get("left",  1500))))
+                r = max(1000, min(2000, int(data.get("right", 1500))))
+                _node.publish_set_neutral(l, r)
+                print(f"[bridge] Neutral set: L={l} R={r}", flush=True)
         except Exception as e:
             print(f"[recv] {e}", flush=True)
 

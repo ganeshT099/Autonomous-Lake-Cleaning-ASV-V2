@@ -32,7 +32,7 @@ def generate_launch_description():
 
     # Thruster — respawn (I2C may not be ready immediately at boot)
     thruster = Node(
-        package="asv_thruster", executable="asv_thruster_node", output="screen",
+        package="asv_thruster", executable="ardu_thruster", output="screen",
         respawn=True, respawn_delay=5.0)
 
     # Web bridge + autonomous pilot — 3s delay so local_server is ready first
